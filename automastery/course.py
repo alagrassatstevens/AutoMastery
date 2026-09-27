@@ -39,6 +39,7 @@ class Course():
             os.makedirs(self.course_data_root)
 
         self.student_data_dict = self.get_student_data(overwrite_student_json) # {id : name}, ...
+        self._rubric_assessment_cache = {}
         self.assignment_id_to_name = self.get_assignment_pairs(overwrite_assignment_json) # {assignment id : assignment name}, ...
         self.gradescope =  Gradescope(
              username=GS_USR,  # * Note, Your user might be the email associated with the account. U
@@ -154,6 +155,57 @@ class Course():
                 break
 
         return all_assignments
+
+    def load_outcome_alignment(self, overwrite=False):
+        """
+        Maps each Canvas learning outcome to every rubric criterion aligned to it,
+        across all assignments in the course:
+            {outcome_id: [{assignment_id, criterion_id, assignment_name}, ...]}
+        """
+        path = self.course_config_root / "outcome_alignment.json"
+        if path.exists() and not overwrite:
+            with open(path) as f:
+                return json.load(f)
+
+        alignments = {}
+        for assignment_id, name in self.assignment_id_to_name.items():
+            if "Lab" not in name and "Homework" not in name:
+                continue # Can't be relevant
+            url = f"{self.PAGE_URL}/courses/{self.COURSE_ID}/assignments/{assignment_id}?include[]=rubric"
+            response = requests.get(url, headers=self.headers)
+            response.raise_for_status()
+            for criterion in response.json().get("rubric") or []:
+                outcome_id = criterion.get("outcome_id")
+                if outcome_id is None:
+                    raise RuntimeError(f"No outcome id found in rubric: {criterion}")
+                alignments.setdefault(str(outcome_id), []).append({
+                    "assignment_id": assignment_id,
+                    "criterion_id": criterion["id"],
+                    "assignment_name": name,
+                })
+        with open(path, "w") as f:
+            json.dump(alignments, f, indent=4)
+        return alignments
+
+    def get_student_rubric_score(self, assignment_id, criterion_id, canvas_user_id):
+        """Returns mastery level for one rubric criterion of one assignment"""
+        if assignment_id not in self._rubric_assessment_cache:
+            self._rubric_assessment_cache[assignment_id] = self._fetch_rubric_assessments(assignment_id)
+        assessment = self._rubric_assessment_cache[assignment_id].get(int(canvas_user_id), {})
+        return assessment[str(criterion_id)]["points"]
+
+    def _fetch_rubric_assessments(self, assignment_id):
+        url = f"{self.PAGE_URL}/courses/{self.COURSE_ID}/assignments/{assignment_id}/submissions"
+        params = {"include[]": "rubric_assessment", "per_page": 100}
+        by_user = {}
+        while url:
+            response = requests.get(url, headers=self.headers, params=params)
+            response.raise_for_status()
+            for submission in response.json():
+                by_user[submission["user_id"]] = submission.get("rubric_assessment") or {}
+            url = response.links.get("next", {}).get("url")
+            params = None
+        return by_user
     
     def get_assignment_pairs(self, should_overwrite = False):
         """Returns a dictionary where the key is the assignment ID and the value is the assignment name."""

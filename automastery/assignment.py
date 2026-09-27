@@ -41,24 +41,14 @@ class Assignment(ABC):
 
         if not os.path.exists(self.assignment_config_path): # Make directory for assignment if doesn't exist already.
             os.mkdir(self.assignment_config_path)
+        self.set_score_thresholds()
 
-        if os.path.exists(self.assignment_config_path / "score_thresholds.json"):
-            with open(self.assignment_config_path / "score_thresholds.json") as f:
-                self.score_thresholds = json.load(f)
-        else:
-            self.score_thresholds = {}
-            threshold_defaults = {"Exceeds Mastery":0.99, "Mastery":0.75, "Near Mastery":0.5, "Below Mastery":0.25}
-            for threshold in threshold_defaults.keys():
-                user_threshold = input(f"Enter threshold for {threshold} or <Enter> for default: ")
-                if user_threshold == "":
-                   threshold_value = threshold_defaults[threshold]
-                else:
-                    threshold_value = float(user_threshold)
-
-                self.score_thresholds[threshold] = threshold_value
-            with open(self.assignment_config_path / "score_thresholds.json", "w") as f:
-                json.dump(self.score_thresholds, f)
-
+    @property
+    def uses_score_thresholds(self)->bool:
+        """ returns whether this question type uses some
+        notion of thresholds where different scores
+        correspond to different levels of mastery"""
+        return True
 
     @property
     @abstractmethod
@@ -83,6 +73,38 @@ class Assignment(ABC):
         """
         pass
 
+    def set_score_thresholds(self):
+        if os.path.exists(self.assignment_config_path / "score_thresholds.json"):
+            with open(self.assignment_config_path / "score_thresholds.json") as f:
+                self.score_thresholds = json.load(f)
+        else:
+            self.score_thresholds = {}
+            ask_for_thresholds = True
+            if "Homework" in self.name:
+                threshold_defaults = {"Exceeds Mastery":0.99, "Mastery":0.75, "Near Mastery":0.5, "Below Mastery":0.25}
+                ask_for_thresholds = False
+            elif "Lab" in self.name:
+                threshold_defaults =  {"Exceeds Mastery":2, "Mastery":2, "Near Mastery":2, "Below Mastery":0.99}
+                ask_for_thresholds = False
+            else:
+                threshold_defaults =  {"Exceeds Mastery":0.99, "Mastery":0.75, "Near Mastery":0.5, "Below Mastery":0.25}
+            if ask_for_thresholds:
+                for threshold in threshold_defaults.keys():
+                    # user_threshold = input(f"Enter threshold for {threshold} or <Enter> for default: ")
+                    user_threshold = ""
+                    if user_threshold == "":
+                        threshold_value = threshold_defaults[threshold]
+                    else:
+                        threshold_value = float(user_threshold)
+                    self.score_thresholds[threshold] = threshold_value
+            else:
+                self.score_thresholds = threshold_defaults
+            with open(self.assignment_config_path / "score_thresholds.json", "w") as f:
+                json.dump(self.score_thresholds, f)
+
+
+
+
     def score_to_rubric_score(self, score:float)->int:
         """
 
@@ -93,6 +115,7 @@ class Assignment(ABC):
             A mastery rubric score from 1 to 4.
 
         """
+        assert self.uses_score_thresholds
         if score >= self.score_thresholds["Exceeds Mastery"]:
             return 4
         elif score >= self.score_thresholds["Mastery"]:
@@ -122,6 +145,21 @@ class Assignment(ABC):
                     continue
             self.update_mastery_score_for_student(int(sid), student_data_dict[sid])
 
+    def clear_comments_for_student(self, student_data_dict):
+        submission_url = f"{self.course.PAGE_URL}/courses/{self.course.COURSE_ID}/assignments/{self.assignment_id}/submissions/{student_data_dict['id']}"
+        comments = requests.get(submission_url, headers=self.course.headers,
+                                params={"include[]": "submission_comments"}).json().get("submission_comments", [])
+        for c in comments:
+            if "Not yet. According to Gradescope" in c["text"]:
+                print(c["comment"])
+                resp = requests.delete(f"{submission_url}/comments/{c['id']}", headers=self.course.headers)
+                try:
+                    resp.raise_for_status()
+                except requests.exceptions.HTTPError as e:
+                    print(e)
+                    print(f"Unable to delete comments")
+                    return
+
     def update_mastery_score_for_student(self, sid:int, student_data_dict:dict):
         """
         Updates mastery score for a particular student on Canvas
@@ -150,6 +188,10 @@ class Assignment(ABC):
                 del new_outcome["comment"]["text_comment"]
             else:
                 print("Adding comment", new_outcome["comment"]["text_comment"])
+        else:
+            # Delete existing comments (do this before pushing to clean up
+            self.clear_comments_for_student(student_data_dict)
+
 
         # Needs to be done without the score to work for some reason
         out_response = requests.put(submission_url, headers=self.course.headers, json=new_outcome)
@@ -219,7 +261,7 @@ class LoadFromCSVAssignment(Assignment):
             self.update_csv_from_gradescope(csv_file_name)
 
         self.score_df = pd.read_csv(csv_file_name)
-        self.rubric_id_to_qkeys = self.load_rubric_id_to_qkeys() #load from a json file
+        self.rubric_id_to_qkeys, self.rubric_id_to_outcome_id = self.load_rubric_id_to_qkeys() # load from a json file
         self.rubric_id_to_total_pts = self.get_rubric_id_to_total_pts(self.rubric_id_to_qkeys)
 
     def update_csv_from_gradescope(self, csv_file_name):
@@ -304,10 +346,13 @@ class LoadFromCSVAssignment(Assignment):
             rubric_id_to_qkeys = self.select_rubric_id_to_qkeys
             with open(filename, "w") as json_file:
                 json.dump(rubric_id_to_qkeys, json_file)
-            return rubric_id_to_qkeys
         else:
             with open(filename) as json_file:
-                return json.load(json_file)
+                rubric_id_to_qkeys =  json.load(json_file)
+        # Remove separate the rubric_id_to_outcome_id
+        rubric_id_to_outcome_id = rubric_id_to_qkeys["rubric_id_to_outcome_id"]
+        del rubric_id_to_qkeys["rubric_id_to_outcome_id"]
+        return rubric_id_to_qkeys, rubric_id_to_outcome_id
 
     def _question_key_to_total_pts(self, question_key: str, return_match:bool=False)->int:
         """
@@ -360,6 +405,7 @@ class LoadFromCSVAssignment(Assignment):
         response.raise_for_status()
         canvas_rubrics_data = response.json()
         rubric_id_to_rubric_data: dict[str, dict] = {}
+        rubric_id_to_outcome_id: dict[str, dict] = {}
         if "rubric" not in canvas_rubrics_data:
             raise RubricNotFoundError(self.assignment_id)
         for rubric in canvas_rubrics_data['rubric']:
@@ -385,6 +431,11 @@ class LoadFromCSVAssignment(Assignment):
                 print(f"Confirming question key: {question_key}")
             print("Done: saving to the dictionary")
             rubric_id_to_rubric_data[rubric['id']] = keys_for_rubric_item
+            outcome_id = rubric["outcome_id"]
+            rubric_id_to_outcome_id[rubric['id']] = outcome_id #
+        # Not the cleanest... ideally this would also be nested at the same levels as qkeys
+        # but I don't want to break our existing JSONs at the moment
+        rubric_id_to_rubric_data["rubric_id_to_outcome_id"] = rubric_id_to_outcome_id
         return rubric_id_to_rubric_data
 
 
@@ -416,6 +467,7 @@ class LoadFromCSVAssignment(Assignment):
                     missing_specs.append(qkey_minus_pts)
                 if np.isnan(subscore):
                     unscored_specs.append(qkey_minus_pts)
+            new_outcome["rubric_assessment"][str(rubric_id)] = {"points": mastery_score}
             if verbose:
                 print(f"{student_name} new outcome: {new_outcome}")
         if len(missing_specs) and not missing:
@@ -423,7 +475,8 @@ class LoadFromCSVAssignment(Assignment):
             missing_spec_comment = "\n".join(missing_specs + unscored_specs)
             comment += missing_spec_comment
             comment += "\nPlease check Gradescope to review your feedback. To revise your work for full credit, please follow the steps in Section 3.6 of the syllabus."
-            new_outcome["rubric_assessment"][str(rubric_id)] = {"points": mastery_score}
+
+
         if verbose:
             print(f"{student_name} new outcome: {new_outcome}")
 
@@ -514,6 +567,7 @@ class MultiMasteryExamQuestion(ExamQuestion):
         """
         super().__init__(name, assignment_id, course, update_from_gradescope)
         self.rubric_id_to_qkeys_by_mastery_level = {}
+        self.course_outcome_alignment  = self.course.load_outcome_alignment()
         # Assuming Mastery and Exceeds Mastery are the things
         for rubric_id in self.rubric_id_to_qkeys:
             qkeys_by_mastery_level = {"Exceeds Mastery": [], "Mastery": []}
@@ -526,6 +580,30 @@ class MultiMasteryExamQuestion(ExamQuestion):
                 else:
                     raise RuntimeError("Question key {qkey} not matched to [Exceeds Mastery] or [Mastery]")
             self.rubric_id_to_qkeys_by_mastery_level[rubric_id] = qkeys_by_mastery_level
+
+    @property
+    def uses_score_thresholds(self)->bool:
+        return False
+
+    def unmet_aligned_formative_assessments(self, outcome_id:str, submission_url:str)->List[str]:
+        """
+        Given an outcome ID, returns the names of which assignments aligned
+        with that outcome have not yet met specs.
+        """
+        unmet_assessments = []
+        canvas_user_id = submission_url.split("/")[-1]
+        aligned_assessments = self.course_outcome_alignment[str(outcome_id)]
+        if len(aligned_assessments) == 1:
+            raise RuntimeError("Didn't see any other aligned assessments. Is this test only?")
+        for assessment in aligned_assessments:
+            if assessment["assignment_id"] == self.assignment_id:
+                continue
+            points = self.course.get_student_rubric_score(
+                assessment["assignment_id"], assessment["criterion_id"], canvas_user_id)
+            met = points is not None and points > 0
+            if not met:
+                unmet_assessments.append(assessment["assignment_name"])
+        return unmet_assessments
 
     def compute_new_outcome(self, sid:str, student_name:str, submission_url:str, verbose:bool=True) -> dict:
         student_df = find_student_df_by_SID(self.score_df, sid, student_name = student_name)
@@ -540,6 +618,15 @@ class MultiMasteryExamQuestion(ExamQuestion):
 
         for rubric_id in self.rubric_id_to_qkeys:
             qkeys = self.rubric_id_to_qkeys[rubric_id]
+            outcome_id = self.rubric_id_to_outcome_id[rubric_id]
+            formative_assessments_not_met = self.unmet_aligned_formative_assessments(outcome_id, submission_url)
+            if len(formative_assessments_not_met):
+                comment += "Not eligible for Mastery yet. Missing specs for these aligned assignments: \n"
+                comment += "\n".join(formative_assessments_not_met)
+                comment += "\n Your exam mastery will update once specs for the assignments above have been met."
+                comment += "\n See Gradescope for feedback in the meantime"
+                new_outcome["rubric_assessment"][str(rubric_id)] = {"points": 0.0}
+                continue
 
             total_mastery_met = 0
             total_exceeds_met = 0
@@ -658,7 +745,7 @@ def make_assignment_from_name(assignment_name, assignment_id, course) -> Assignm
 
     """
     assignment_dir = course.course_config_root / f"assignment_{assignment_id}"
-    possible_classes = ["ExamQuestion", "MultiScoreMultiOutcomeAssignment", "SingleScoreSingleOutcomeAssignment"]
+    possible_classes = ["ExamQuestion", "MultiScoreMultiOutcomeAssignment", "SingleScoreSingleOutcomeAssignment", "MultiMasteryExamQuestion"]
     if not os.path.exists(assignment_dir / "assignment.json"):
         os.makedirs(assignment_dir, exist_ok=True)
         assignment_cls_input = input(f"{assignment_name} Assignment class : SS, EQ or {possible_classes}: ")
