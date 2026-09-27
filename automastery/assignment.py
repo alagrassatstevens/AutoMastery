@@ -215,7 +215,7 @@ class LoadFromCSVAssignment(Assignment):
             print("Created assignment data directory")
 
         csv_file_name = self.get_csv_file_name()
-        if False and self.update_from_gradescope:
+        if self.update_from_gradescope:
             self.update_csv_from_gradescope(csv_file_name)
 
         self.score_df = pd.read_csv(csv_file_name)
