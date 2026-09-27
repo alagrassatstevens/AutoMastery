@@ -5,14 +5,13 @@ import os
 
 import tqdm
 from abc import ABC, abstractmethod
-from typing import Union, Any
+from typing import Union, Any, List
 
 import numpy as np
 import pandas as pd
 import re
-from pathlib import Path
 
-from .utils import assignment_match_to_csv_name, StudentNotFoundError, StudentSubmissionNotFoundError, \
+from .utils import StudentNotFoundError, StudentSubmissionNotFoundError, \
     find_student_df_by_SID, RubricNotFoundError, find_csv_in_dir
 from .course import Course
 from gradescope import save_csv
@@ -216,7 +215,7 @@ class LoadFromCSVAssignment(Assignment):
             print("Created assignment data directory")
 
         csv_file_name = self.get_csv_file_name()
-        if self.update_from_gradescope:
+        if False and self.update_from_gradescope:
             self.update_csv_from_gradescope(csv_file_name)
 
         self.score_df = pd.read_csv(csv_file_name)
@@ -407,12 +406,9 @@ class LoadFromCSVAssignment(Assignment):
         for rubric_id in self.rubric_id_to_qkeys:
             qkeys = self.rubric_id_to_qkeys[rubric_id]
             mastery_score = self.compute_mastery_score(rubric_id, qkeys, student_df)
-            new_outcome["rubric_assessment"][str(rubric_id)] = {"points": mastery_score}
             missing_specs = []
             unscored_specs = []
             for qkey in qkeys:
-                if qkey not in student_df:
-                    print("Cannot find student data for key {qkey}")
                 subscore = student_df[qkey]
                 score_regex_match_for_key = self._question_key_to_total_pts(qkey, return_match=True)
                 qkey_minus_pts = qkey[2:-len(score_regex_match_for_key.group(0))]
@@ -420,14 +416,16 @@ class LoadFromCSVAssignment(Assignment):
                     missing_specs.append(qkey_minus_pts)
                 if np.isnan(subscore):
                     unscored_specs.append(qkey_minus_pts)
-
-        if verbose:
-            print(f"{student_name} new outcome: {new_outcome}")
+            if verbose:
+                print(f"{student_name} new outcome: {new_outcome}")
         if len(missing_specs) and not missing:
             comment += "Not yet. According to Gradescope, you haven't met the following specs:\n"
             missing_spec_comment = "\n".join(missing_specs + unscored_specs)
             comment += missing_spec_comment
             comment += "\nPlease check Gradescope to review your feedback. To revise your work for full credit, please follow the steps in Section 3.6 of the syllabus."
+            new_outcome["rubric_assessment"][str(rubric_id)] = {"points": mastery_score}
+        if verbose:
+            print(f"{student_name} new outcome: {new_outcome}")
 
         if len(comment):
             new_outcome["comment"] = {"text_comment": comment}
@@ -443,7 +441,13 @@ class LoadFromCSVAssignment(Assignment):
             student_df: Pandas DataFrame containing student data
 
         Returns:
-            score : a number between 0 and 1 (usually a percentage of points)
+            score : An integer corresponding to that "Mastery" level on Canvas
+                    depends on your course configuration for the names. We assume something like
+                    0: Missing/no evidence
+                    1: Beginning
+                    2: Near
+                    3: Mastery
+                    4: Exceeds Mastery
 
         """
         total_mastery_score = 0
@@ -477,7 +481,6 @@ class LoadFromCSVAssignment(Assignment):
         return total_question_score
 
 
-
 class ExamQuestion(LoadFromCSVAssignment):
     def infer_assignment_keys_from_df(self, student_df:pd.DataFrame) -> list:
         assignment_keys = []
@@ -494,6 +497,108 @@ class ExamQuestion(LoadFromCSVAssignment):
                 raise RuntimeError("Unable to find match for total question")
         return assignment_keys
 
+
+class MultiMasteryExamQuestion(ExamQuestion):
+    """
+    For exam questions where students can reach one of multiple mastery levels
+    The "mastery score" is no longer based on a single score though
+
+    This also encodes the logic that Mastery needs to be reached before Exceeds Mastery
+    """
+
+    def __init__(self, name, assignment_id, course, update_from_gradescope=True):
+        """
+        Same as parent, but adds  rubric_id_to_qkeys_by_mastery_level to the representation
+        For each rubric ID, there's another dictionary, which groups the keys by mastery level
+        This is so we know when a student has completed all specs for a given mastery level
+        """
+        super().__init__(name, assignment_id, course, update_from_gradescope)
+        self.rubric_id_to_qkeys_by_mastery_level = {}
+        # Assuming Mastery and Exceeds Mastery are the things
+        for rubric_id in self.rubric_id_to_qkeys:
+            qkeys_by_mastery_level = {"Exceeds Mastery": [], "Mastery": []}
+            for qkey in self.rubric_id_to_qkeys[rubric_id]:
+                qkey_minus_whitespace = qkey.replace(" ", "")
+                if "[Mastery]" in qkey_minus_whitespace:
+                    qkeys_by_mastery_level["Mastery"].append(qkey)
+                elif "[ExceedsMastery]" in qkey_minus_whitespace:
+                    qkeys_by_mastery_level["Exceeds Mastery"].append(qkey)
+                else:
+                    raise RuntimeError("Question key {qkey} not matched to [Exceeds Mastery] or [Mastery]")
+            self.rubric_id_to_qkeys_by_mastery_level[rubric_id] = qkeys_by_mastery_level
+
+    def compute_new_outcome(self, sid:str, student_name:str, submission_url:str, verbose:bool=True) -> dict:
+        student_df = find_student_df_by_SID(self.score_df, sid, student_name = student_name)
+
+        new_outcome = {
+            "rubric_assessment": {}}
+        comment = ""
+        missing = student_df["Status"] == "Missing"
+        if missing:
+            new_outcome["submission"] = {"late_policy_status": "missing"}
+            comment += "Your test submission is not found. Notify course staff ASAP if this is a mistake"
+
+        for rubric_id in self.rubric_id_to_qkeys:
+            qkeys = self.rubric_id_to_qkeys[rubric_id]
+
+            total_mastery_met = 0
+            total_exceeds_met = 0
+            mastery_qkeys = self.rubric_id_to_qkeys_by_mastery_level[rubric_id]["Mastery"]
+            exceeds_qkeys = self.rubric_id_to_qkeys_by_mastery_level[rubric_id]["Exceeds Mastery"]
+            missing_mastery_specs = []
+            missing_exceeds_specs = []
+            for qkey in qkeys:
+                subscore = student_df[qkey]
+                score_regex_match_for_key = self._question_key_to_total_pts(qkey, return_match=True)
+                qkey_minus_pts = qkey[2:-len(score_regex_match_for_key.group(0))]
+                met_spec = subscore >= int(float(score_regex_match_for_key.group(1))) and not np.isnan(subscore)
+
+                # Case 1, it's normal Mastery
+                if qkey in mastery_qkeys:
+                    if met_spec:
+                        total_mastery_met += 1
+                    else:
+                        missing_mastery_specs.append(qkey_minus_pts)
+                # Case 2, exceeds
+                elif qkey in exceeds_qkeys:
+                    if met_spec:
+                        total_exceeds_met += 1
+                    else:
+                        missing_exceeds_specs.append(qkey_minus_pts)
+
+            mastery_score = self.compute_mastery_score(total_mastery_met, total_exceeds_met, mastery_qkeys, exceeds_qkeys)
+            if mastery_score ==  4:
+                comment += ("Congratulations on showing Exceeds Mastery on this question :) ")
+            elif mastery_score == 3:
+                comment += "Mastery specs met! \n Not eligible for Exceeds Mastery due to missing these specs: \n"
+                comment += "\n".join(missing_exceeds_specs)
+            else:
+                comment += "Mastery not yet met. Has not met these tagged [Mastery] according to Gradescope: "
+                comment += "\n".join(missing_mastery_specs)
+                comment += "\n Thus, not yet eligible for Exceeds Mastery"
+            new_outcome["rubric_assessment"][str(rubric_id)] = {"points": mastery_score}
+        if verbose:
+            print(f"{student_name} new outcome: {new_outcome}")
+
+        if len(comment):
+            new_outcome["comment"] = {"text_comment": comment}
+        return new_outcome
+
+    def compute_mastery_score(self, total_mastery_met: int, total_exceeds_met: int, mastery_qkeys: List[str], exceeds_qkeys: List[str]) -> int:
+        """
+        Instead of using points, this checks if all Mastery or Exceeds Mastery specs were met
+        """
+        if total_mastery_met < len(mastery_qkeys):
+            return 0 # Not enough for mastery
+        if total_mastery_met == len(mastery_qkeys): # Eligible for mastery
+            if total_exceeds_met == len(exceeds_qkeys):
+                return 4 # Exceeds
+            else:
+                return 3 # Normal mastery
+        raise RuntimeError("Should not get here")
+
+
+
 class MultiScoreMultiOutcomeAssignment(LoadFromCSVAssignment):
     """
     A class that can handle multiple scores and multiple outcomes
@@ -507,7 +612,6 @@ class MultiScoreMultiOutcomeAssignment(LoadFromCSVAssignment):
             assignment_keys.append(key)
         return assignment_keys
 
-
 class SingleScoreSingleOutcomeAssignment(Assignment):
 
     @property
@@ -516,13 +620,7 @@ class SingleScoreSingleOutcomeAssignment(Assignment):
 
     def compute_new_outcome(self, sid:str, student_name:str, submission_url:str, default_0=True):
         response = requests.get(submission_url, headers=self.course.headers)
-
         submission_data: dict = response.json()
-        #if "score" not in submission_data: TODO delete this if not needed
-        #    if not default_0:
-        #        raise StudentSubmissionNotFoundError(f"Could not find submission: {submission_url}")
-
-        # You can do this via Gradescope as well
         if "score" not in submission_data or submission_data["score"] is None:
             if default_0:
                 score = 0
@@ -547,7 +645,6 @@ class SingleScoreSingleOutcomeAssignment(Assignment):
             new_outcome["rubric_assessment"][str(rubric["id"])] = {"points": mastery_score}
         print(f"{student_name} new outcome: {new_outcome}")
         return new_outcome
-
 
 def make_assignment_from_name(assignment_name, assignment_id, course) -> Assignment:
     """
