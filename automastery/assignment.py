@@ -144,6 +144,14 @@ class Assignment(ABC):
             print(e)
             return
 
+        # Prevents posting the comment again
+        if "comment" in new_outcome:
+            if self._comment_already_posted(submission_url, new_outcome["comment"]["text_comment"]):
+                print("Comment already posted")
+                del new_outcome["comment"]["text_comment"]
+            else:
+                print("Adding comment", new_outcome["comment"]["text_comment"])
+
         # Needs to be done without the score to work for some reason
         out_response = requests.put(submission_url, headers=self.course.headers, json=new_outcome)
         try:
@@ -154,11 +162,27 @@ class Assignment(ABC):
             return
 
         if self.need_to_update_total_question_score:
-            total_question_score = self.compute_total_question_score(sid, student_name)
-            # Then make sure to update the score. I don't know why this is needed...
+            # Need to keep both of these temporarily until we wipe all the Canvas points
+            met_all = np.all([res["points"] > 0 for res in new_outcome["rubric_assessment"].values()])
+            submission_data =  {"submission[posted_grade]": float(0)}
+            # Old: for points. Keeping for convenience
+            #total_question_score = self.compute_total_question_score(sid, student_name)
+            # submission_data =  {"submission[posted_grade]": float(total_question_score)}
             out_response = requests.put(submission_url, headers=self.course.headers, json=new_outcome,
-                                        data={"submission[posted_grade]": float(total_question_score)})
+                                        data=submission_data)
             out_response.raise_for_status()
+            submission_data =  {"submission[posted_grade]": "complete" if met_all else "incomplete"}
+            out_response = requests.put(submission_url, headers=self.course.headers, json=new_outcome,
+                                        data=submission_data)
+            out_response.raise_for_status()
+
+    def _comment_already_posted(self, submission_url:str, text:str)->bool:
+        response = requests.get(submission_url, headers=self.course.headers,
+                                params={"include[]": "submission_comments"})
+        response.raise_for_status()
+        existing = response.json().get("submission_comments", [])
+        return any(c["comment"] == text for c in existing)
+
 
     def compute_total_question_score(self, sid:int, student_name:str)->int:
         """
@@ -286,7 +310,7 @@ class LoadFromCSVAssignment(Assignment):
             with open(filename) as json_file:
                 return json.load(json_file)
 
-    def _question_key_to_total_pts(self, question_key: str)->int:
+    def _question_key_to_total_pts(self, question_key: str, return_match:bool=False)->int:
         """
 
         Args:
@@ -294,11 +318,14 @@ class LoadFromCSVAssignment(Assignment):
 
         Returns: How many points that question is worth (as inferred by the
         question key)
+           if return_match, returns the whole match in the string
 
         """
         match = re.search(r'\((\d+(?:\.\d+)?)\s*pts\)', question_key)
         if match:
-            return float(match.group(1))
+            if not return_match:
+                return float(match.group(1))
+            return match
         else:
             raise RuntimeError("Unable to find match")
 
@@ -371,16 +398,39 @@ class LoadFromCSVAssignment(Assignment):
 
         new_outcome = {
             "rubric_assessment": {}}
+        comment = ""
+        missing = student_df["Status"] == "Missing"
+        if missing:
+            new_outcome["submission"] = {"late_policy_status": "missing"}
+            comment += "Gradescope submission missing"
 
         for rubric_id in self.rubric_id_to_qkeys:
             qkeys = self.rubric_id_to_qkeys[rubric_id]
             mastery_score = self.compute_mastery_score(rubric_id, qkeys, student_df)
-            if mastery_score is not None:
-                new_outcome["rubric_assessment"][str(rubric_id)] = {"points": mastery_score}
-            else:
-                print("Mastery score was None")
+            new_outcome["rubric_assessment"][str(rubric_id)] = {"points": mastery_score}
+            missing_specs = []
+            unscored_specs = []
+            for qkey in qkeys:
+                if qkey not in student_df:
+                    print("Cannot find student data for key {qkey}")
+                subscore = student_df[qkey]
+                score_regex_match_for_key = self._question_key_to_total_pts(qkey, return_match=True)
+                qkey_minus_pts = qkey[2:-len(score_regex_match_for_key.group(0))]
+                if subscore < float(score_regex_match_for_key.group(1)):
+                    missing_specs.append(qkey_minus_pts)
+                if np.isnan(subscore):
+                    unscored_specs.append(qkey_minus_pts)
+
         if verbose:
             print(f"{student_name} new outcome: {new_outcome}")
+        if len(missing_specs) and not missing:
+            comment += "Not yet. According to Gradescope, you haven't met the following specs:\n"
+            missing_spec_comment = "\n".join(missing_specs + unscored_specs)
+            comment += missing_spec_comment
+            comment += "\nPlease check Gradescope to review your feedback. To revise your work for full credit, please follow the steps in Section 3.6 of the syllabus."
+
+        if len(comment):
+            new_outcome["comment"] = {"text_comment": comment}
         return new_outcome
 
 
@@ -393,6 +443,7 @@ class LoadFromCSVAssignment(Assignment):
             student_df: Pandas DataFrame containing student data
 
         Returns:
+            score : a number between 0 and 1 (usually a percentage of points)
 
         """
         total_mastery_score = 0
@@ -402,10 +453,6 @@ class LoadFromCSVAssignment(Assignment):
             subscore = student_df[qkey]
             total_mastery_score += subscore
         score = total_mastery_score / self.rubric_id_to_total_pts[rubric_id]
-
-        if "Homework 5" in self.name and rubric_id == "_3113":
-            if score <= 1: #standard case
-                return None
 
         mastery_score: int = self.score_to_rubric_score(score)
         return mastery_score
