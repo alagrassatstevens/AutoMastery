@@ -150,8 +150,7 @@ class Assignment(ABC):
         comments = requests.get(submission_url, headers=self.course.headers,
                                 params={"include[]": "submission_comments"}).json().get("submission_comments", [])
         for c in comments:
-            if "Not yet. According to Gradescope" in c["text"]:
-                print(c["comment"])
+            if "Not yet. According to Gradescope" in c["comment"]:
                 resp = requests.delete(f"{submission_url}/comments/{c['id']}", headers=self.course.headers)
                 try:
                     resp.raise_for_status()
@@ -192,30 +191,40 @@ class Assignment(ABC):
             # Delete existing comments (do this before pushing to clean up
             self.clear_comments_for_student(student_data_dict)
 
+        current_result = requests.get(submission_url, headers=self.course.headers,
+                                      params={"include[]": "rubric_assessment"}).json()
+        current_grade = current_result.get("grade")
+
+        current_points = {k: v.get("points") for k, v in (current_result.get("rubric_assessment") or {}).items()}
+        mastery_result_changed = any(current_points.get(k) != r["points"]
+                             for k, r in new_outcome["rubric_assessment"].items())
+        other_update = "submission" in new_outcome and current_result["late_policy_status"] != new_outcome["submission"]["late_policy_status"]
 
         # Needs to be done without the score to work for some reason
-        out_response = requests.put(submission_url, headers=self.course.headers, json=new_outcome)
-        try:
-            out_response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
-            print(e)
-            print(f"Unable to update for {student_name}")
-            return
+        if mastery_result_changed or other_update:
+            import ipdb; ipdb.set_trace()
+            out_response = requests.put(submission_url, headers=self.course.headers, json=new_outcome)
+            try:
+                out_response.raise_for_status()
+            except requests.exceptions.HTTPError as e:
+                print(e)
+                print(f"Unable to update for {student_name}")
+                return
 
         if self.need_to_update_total_question_score:
             # Need to keep both of these temporarily until we wipe all the Canvas points
             met_all = np.all([res["points"] > 0 for res in new_outcome["rubric_assessment"].values()])
-            submission_data =  {"submission[posted_grade]": float(0)}
-            # Old: for points. Keeping for convenience
-            #total_question_score = self.compute_total_question_score(sid, student_name)
-            # submission_data =  {"submission[posted_grade]": float(total_question_score)}
-            out_response = requests.put(submission_url, headers=self.course.headers, json=new_outcome,
-                                        data=submission_data)
-            out_response.raise_for_status()
-            submission_data =  {"submission[posted_grade]": "complete" if met_all else "incomplete"}
-            out_response = requests.put(submission_url, headers=self.course.headers, json=new_outcome,
-                                        data=submission_data)
-            out_response.raise_for_status()
+            new_grade = "complete" if met_all else "incomplete"
+            if current_grade != new_grade:
+                import ipdb; ipdb.set_trace()
+                #submission_data =  {"submission[posted_grade]": float(0)}
+                #out_response = requests.put(submission_url, headers=self.course.headers, json=new_outcome,
+                 #                           data=submission_data)
+                #out_response.raise_for_status()
+                submission_data =  {"submission[posted_grade]": new_grade}
+                out_response = requests.put(submission_url, headers=self.course.headers, json=new_outcome,
+                                            data=submission_data)
+                out_response.raise_for_status()
 
     def _comment_already_posted(self, submission_url:str, text:str)->bool:
         response = requests.get(submission_url, headers=self.course.headers,
@@ -463,13 +472,13 @@ class LoadFromCSVAssignment(Assignment):
                 subscore = student_df[qkey]
                 score_regex_match_for_key = self._question_key_to_total_pts(qkey, return_match=True)
                 qkey_minus_pts = qkey[2:-len(score_regex_match_for_key.group(0))]
+                if "Autograder" in qkey_minus_pts:
+                    qkey_minus_pts = "One or more autograded specs (see Gradescope)"
                 if subscore < float(score_regex_match_for_key.group(1)):
                     missing_specs.append(qkey_minus_pts)
                 if np.isnan(subscore):
                     unscored_specs.append(qkey_minus_pts)
             new_outcome["rubric_assessment"][str(rubric_id)] = {"points": mastery_score}
-            if verbose:
-                print(f"{student_name} new outcome: {new_outcome}")
         if len(missing_specs) and not missing:
             comment += "Not yet. According to Gradescope, you haven't met the following specs:\n"
             missing_spec_comment = "\n".join(missing_specs + unscored_specs)
