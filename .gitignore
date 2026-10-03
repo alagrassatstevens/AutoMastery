@@ -31,3 +31,4 @@ data/
 sandbox/
 
 # Potentially worth adding
+.idea/

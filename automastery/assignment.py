@@ -479,8 +479,8 @@ class LoadFromCSVAssignment(Assignment):
             missing_spec_comment = "\n".join(missing_specs + unscored_specs)
             comment += missing_spec_comment
             comment += "\nPlease check Gradescope to review your feedback. To revise your work for full credit, please follow the steps in Section 3.6 of the syllabus."
-
-        logger.info(f"{student_name} new outcome: {new_outcome}")
+        #THis is probably actually too verbose
+        #logger.info(f"{student_name} new outcome: {new_outcome}")
 
         if len(comment):
             new_outcome["comment"] = {"text_comment": comment}
