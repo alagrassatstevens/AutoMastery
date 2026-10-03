@@ -11,6 +11,8 @@ import numpy as np
 import pandas as pd
 import re
 
+from requests import HTTPError
+
 from .utils import StudentNotFoundError, StudentSubmissionNotFoundError, \
     find_student_df_by_SID, RubricNotFoundError, find_csv_in_dir
 from .course import Course
@@ -81,7 +83,7 @@ class Assignment(ABC):
             self.score_thresholds = {}
             ask_for_thresholds = True
             if "Homework" in self.name:
-                threshold_defaults = {"Exceeds Mastery":0.99, "Mastery":0.75, "Near Mastery":0.5, "Below Mastery":0.25}
+                threshold_defaults = {"Exceeds Mastery":2, "Mastery":2, "Near Mastery":0.99, "Below Mastery":1}
                 ask_for_thresholds = False
             elif "Lab" in self.name:
                 threshold_defaults =  {"Exceeds Mastery":2, "Mastery":2, "Near Mastery":2, "Below Mastery":0.99}
@@ -143,23 +145,24 @@ class Assignment(ABC):
             if student_name_match is not None:
                 if student_name_match not in student_data_dict[sid]["name"]:
                     continue
-            self.update_mastery_score_for_student(int(sid), student_data_dict[sid])
+            try:
+                self.update_mastery_score_for_student(int(sid), student_data_dict[sid])
+            except (HTTPError, StudentSubmissionNotFoundError, StudentNotFoundError) as e:
+                print(e)
 
     def clear_comments_for_student(self, student_data_dict):
         submission_url = f"{self.course.PAGE_URL}/courses/{self.course.COURSE_ID}/assignments/{self.assignment_id}/submissions/{student_data_dict['id']}"
         comments = requests.get(submission_url, headers=self.course.headers,
                                 params={"include[]": "submission_comments"}).json().get("submission_comments", [])
         for c in comments:
-            if "Not yet. According to Gradescope" in c["comment"]:
+            if "Not yet. According to Gradescope" in c["comment"] or "Gradescope submission missing" in c["comment"]:
                 resp = requests.delete(f"{submission_url}/comments/{c['id']}", headers=self.course.headers)
                 try:
                     resp.raise_for_status()
                 except requests.exceptions.HTTPError as e:
-                    print(e)
-                    print(f"Unable to delete comments")
-                    return
+                    print(f"Unable to delete comment: {e}")
 
-    def update_mastery_score_for_student(self, sid:int, student_data_dict:dict):
+    def update_mastery_score_for_student(self, sid:int, student_data_dict:dict, verbose:bool=True)->None:
         """
         Updates mastery score for a particular student on Canvas
         Args:
@@ -171,60 +174,50 @@ class Assignment(ABC):
         student_id = student_data_dict["id"]
         submission_url = f"{self.course.PAGE_URL}/courses/{self.course.COURSE_ID}/assignments/{self.assignment_id}/submissions/{student_id}"
         student_name = student_data_dict["short_name"]
-        try:
-            new_outcome = self.compute_new_outcome(sid, student_name, submission_url)
-        except StudentSubmissionNotFoundError as e:
-            print(e)
-            return
-        except StudentNotFoundError as e:
-            print(e)
-            return
+        new_outcome = self.compute_new_outcome(sid, student_name, submission_url)
 
-        # Prevents posting the comment again
-        if "comment" in new_outcome:
-            if self._comment_already_posted(submission_url, new_outcome["comment"]["text_comment"]):
-                print("Comment already posted")
-                del new_outcome["comment"]["text_comment"]
-            else:
-                print("Adding comment", new_outcome["comment"]["text_comment"])
-        else:
-            # Delete existing comments (do this before pushing to clean up
-            self.clear_comments_for_student(student_data_dict)
+        self.adjust_comments_on_new_outcome(new_outcome, student_data_dict, submission_url)
 
-        current_result = requests.get(submission_url, headers=self.course.headers,
-                                      params={"include[]": "rubric_assessment"}).json()
-        current_grade = current_result.get("grade")
+        current_result = requests.get(submission_url, headers=self.course.headers, params={"include[]": "rubric_assessment"}).json()
 
         current_points = {k: v.get("points") for k, v in (current_result.get("rubric_assessment") or {}).items()}
         mastery_result_changed = any(current_points.get(k) != r["points"]
                              for k, r in new_outcome["rubric_assessment"].items())
-        other_update = "submission" in new_outcome and current_result["late_policy_status"] != new_outcome["submission"]["late_policy_status"]
+
+        was_missing = current_result["late_policy_status"] == "missing"
+        now_missing = "submission" in new_outcome and new_outcome["submission"]["late_policy_status"] == "missing"
+        no_longer_missing = was_missing and not now_missing
 
         # Needs to be done without the score to work for some reason
-        if mastery_result_changed or other_update:
-            import ipdb; ipdb.set_trace()
+        if mastery_result_changed:
+            if verbose:
+                print("Mastery result changed", new_outcome, "from", current_result.get("rubric_assessment"), " for",
+                      student_name)
             out_response = requests.put(submission_url, headers=self.course.headers, json=new_outcome)
-            try:
-                out_response.raise_for_status()
-            except requests.exceptions.HTTPError as e:
-                print(e)
-                print(f"Unable to update for {student_name}")
-                return
+            out_response.raise_for_status() # at some point we should make this a session....
 
         if self.need_to_update_total_question_score:
-            # Need to keep both of these temporarily until we wipe all the Canvas points
             met_all = np.all([res["points"] > 0 for res in new_outcome["rubric_assessment"].values()])
             new_grade = "complete" if met_all else "incomplete"
-            if current_grade != new_grade:
-                import ipdb; ipdb.set_trace()
-                #submission_data =  {"submission[posted_grade]": float(0)}
-                #out_response = requests.put(submission_url, headers=self.course.headers, json=new_outcome,
-                 #                           data=submission_data)
-                #out_response.raise_for_status()
-                submission_data =  {"submission[posted_grade]": new_grade}
-                out_response = requests.put(submission_url, headers=self.course.headers, json=new_outcome,
-                                            data=submission_data)
-                out_response.raise_for_status()
+            if current_result.get("grade") != new_grade or no_longer_missing:
+                if was_missing and now_missing:
+                    if verbose: #... turn this into logging
+                        print(f"Still missing submission for {student_name}")
+                else:
+                    print("Changing a grade from ", current_result.get("grade"), "to", new_grade)
+                    submission_data = {"submission[posted_grade]": new_grade,
+                                       "submission[late_policy_status]": "none" if not now_missing else "missing"}
+                    out_response = requests.put(submission_url, headers=self.course.headers, json=new_outcome, data=submission_data)
+                    out_response.raise_for_status()
+
+    def adjust_comments_on_new_outcome(self, new_outcome: dict, student_data_dict: dict, submission_url: str):
+        # Prevents posting the comment again
+        if "comment" in new_outcome:
+            if self._comment_already_posted(submission_url, new_outcome["comment"]["text_comment"]):
+                del new_outcome["comment"]["text_comment"]
+        else:
+            # Delete existing comments, sort of assumes that they met the specs
+            self.clear_comments_for_student(student_data_dict)
 
     def _comment_already_posted(self, submission_url:str, text:str)->bool:
         response = requests.get(submission_url, headers=self.course.headers,
