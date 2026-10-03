@@ -1,4 +1,5 @@
 import argparse
+import logging
 import os
 
 from automastery.assignment import Assignment, make_assignment_from_name
@@ -6,6 +7,7 @@ from automastery.course import Course
 
 
 def main():
+    logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser()
     parser.add_argument("-c", "--course_id", help="Course ID", default=84995)
     parser.add_argument("-s", "--student_name_match",  help="")

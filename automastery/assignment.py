@@ -1,6 +1,7 @@
 import copy
 import io
 import json
+import logging
 import os
 
 import tqdm
@@ -19,6 +20,9 @@ from .course import Course
 from gradescope import save_csv
 
 import requests
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 ''' Class to hold data for an assignment, including questions and subquestions
@@ -148,7 +152,7 @@ class Assignment(ABC):
             try:
                 self.update_mastery_score_for_student(int(sid), student_data_dict[sid])
             except (HTTPError, StudentSubmissionNotFoundError, StudentNotFoundError) as e:
-                print(e)
+                logger.error(e)
 
     def clear_comments_for_student(self, student_data_dict):
         submission_url = f"{self.course.PAGE_URL}/courses/{self.course.COURSE_ID}/assignments/{self.assignment_id}/submissions/{student_data_dict['id']}"
@@ -160,9 +164,9 @@ class Assignment(ABC):
                 try:
                     resp.raise_for_status()
                 except requests.exceptions.HTTPError as e:
-                    print(f"Unable to delete comment: {e}")
+                    logger.warning(f"Unable to delete comment: {e}")
 
-    def update_mastery_score_for_student(self, sid:int, student_data_dict:dict, verbose:bool=True)->None:
+    def update_mastery_score_for_student(self, sid:int, student_data_dict:dict)->None:
         """
         Updates mastery score for a particular student on Canvas
         Args:
@@ -190,9 +194,8 @@ class Assignment(ABC):
 
         # Needs to be done without the score to work for some reason
         if mastery_result_changed:
-            if verbose:
-                print("Mastery result changed", new_outcome, "from", current_result.get("rubric_assessment"), " for",
-                      student_name)
+            logger.info(f"Mastery result changed {new_outcome} from "
+                        f"{current_result.get('rubric_assessment')} for {student_name}")
             out_response = requests.put(submission_url, headers=self.course.headers, json=new_outcome)
             out_response.raise_for_status() # at some point we should make this a session....
 
@@ -201,10 +204,9 @@ class Assignment(ABC):
             new_grade = "complete" if met_all else "incomplete"
             if current_result.get("grade") != new_grade or no_longer_missing:
                 if was_missing and now_missing:
-                    if verbose: #... turn this into logging
-                        print(f"Still missing submission for {student_name}")
+                    logger.info(f"Still missing submission for {student_name}")
                 else:
-                    print("Changing a grade from ", current_result.get("grade"), "to", new_grade)
+                    logger.info(f"Changing a grade from {current_result.get('grade')} to {new_grade}")
                     submission_data = {"submission[posted_grade]": new_grade,
                                        "submission[late_policy_status]": "none" if not now_missing else "missing"}
                     out_response = requests.put(submission_url, headers=self.course.headers, json=new_outcome, data=submission_data)
@@ -256,7 +258,7 @@ class LoadFromCSVAssignment(Assignment):
         self.assignment_data_path = self.course.course_data_root / f"assignment_{assignment_id}"
         if not os.path.exists(self.assignment_data_path):
             os.makedirs(str(self.assignment_data_path))
-            print("Created assignment data directory")
+            logger.info("Created assignment data directory")
 
         csv_file_name = self.get_csv_file_name()
         if self.update_from_gradescope:
@@ -287,7 +289,7 @@ class LoadFromCSVAssignment(Assignment):
         #! Create assignments JSON if does not exist already.
         if not os.path.exists(self.assignment_config_path / "assignment.json"):
             with open(self.assignment_config_path / "assignment.json", 'x') as temp_f:
-                print("Created file:", str(self.assignment_config_path / "assignment.json"))
+                logger.info(f"Created file: {self.assignment_config_path / 'assignment.json'}")
                 json.dump({}, temp_f)
 
 
@@ -443,7 +445,7 @@ class LoadFromCSVAssignment(Assignment):
 
 
 
-    def compute_new_outcome(self, sid:str, student_name:str, submission_url:str, verbose:bool=True) -> dict:
+    def compute_new_outcome(self, sid:str, student_name:str, submission_url:str) -> dict:
         student_df = find_student_df_by_SID(self.score_df, sid, student_name = student_name)
         if student_name is None:
             return None
@@ -478,9 +480,7 @@ class LoadFromCSVAssignment(Assignment):
             comment += missing_spec_comment
             comment += "\nPlease check Gradescope to review your feedback. To revise your work for full credit, please follow the steps in Section 3.6 of the syllabus."
 
-
-        if verbose:
-            print(f"{student_name} new outcome: {new_outcome}")
+        logger.info(f"{student_name} new outcome: {new_outcome}")
 
         if len(comment):
             new_outcome["comment"] = {"text_comment": comment}
@@ -508,7 +508,7 @@ class LoadFromCSVAssignment(Assignment):
         total_mastery_score = 0
         for qkey in qkeys:
             if qkey not in student_df:
-                print("Cannot find student data for key {qkey}")
+                logger.warning(f"Cannot find student data for key {qkey}")
             subscore = student_df[qkey]
             total_mastery_score += subscore
         score = total_mastery_score / self.rubric_id_to_total_pts[rubric_id]
@@ -607,7 +607,7 @@ class MultiMasteryExamQuestion(ExamQuestion):
                 unmet_assessments.append(assessment["assignment_name"])
         return unmet_assessments
 
-    def compute_new_outcome(self, sid:str, student_name:str, submission_url:str, verbose:bool=True) -> dict:
+    def compute_new_outcome(self, sid:str, student_name:str, submission_url:str) -> dict:
         student_df = find_student_df_by_SID(self.score_df, sid, student_name = student_name)
 
         new_outcome = {
@@ -666,8 +666,7 @@ class MultiMasteryExamQuestion(ExamQuestion):
                 comment += "\n".join(missing_mastery_specs)
                 comment += "\n Thus, not yet eligible for Exceeds Mastery"
             new_outcome["rubric_assessment"][str(rubric_id)] = {"points": mastery_score}
-        if verbose:
-            print(f"{student_name} new outcome: {new_outcome}")
+        logger.info(f"{student_name} new outcome: {new_outcome}")
 
         if len(comment):
             new_outcome["comment"] = {"text_comment": comment}
@@ -732,7 +731,7 @@ class SingleScoreSingleOutcomeAssignment(Assignment):
             mastery_score = self.score_to_rubric_score(score/canvas_rubrics_data["points_possible"])
 
             new_outcome["rubric_assessment"][str(rubric["id"])] = {"points": mastery_score}
-        print(f"{student_name} new outcome: {new_outcome}")
+        logger.info(f"{student_name} new outcome: {new_outcome}")
         return new_outcome
 
 def make_assignment_from_name(assignment_name, assignment_id, course) -> Assignment:

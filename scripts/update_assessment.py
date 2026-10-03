@@ -1,10 +1,12 @@
 import argparse
+import logging
 
 from automastery.assignment import make_assignment_from_name
 from automastery.course import Course
 
 
 def main():
+    logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser()
     parser.add_argument("-c", "--course_id", help="Course ID", default=80807)
     parser.add_argument( "-a", "--assignment_name", help="assignment to update")
