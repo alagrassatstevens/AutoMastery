@@ -1,5 +1,3 @@
-import copy
-import io
 import json
 import logging
 import os
@@ -16,6 +14,7 @@ from requests import HTTPError
 
 from .utils import StudentNotFoundError, StudentSubmissionNotFoundError, \
     find_student_df_by_SID, RubricNotFoundError, find_csv_in_dir
+from .gradescope_utils import gradescope_title, download_grades_df
 from .course import Course
 from gradescope import save_csv
 
@@ -272,18 +271,7 @@ class LoadFromCSVAssignment(Assignment):
         """
         Mutator: updates the csv file
         """
-        # Get assignment
-        assignments = self.course.gradescope.get_assignments(self.course.gs_course)
-        gradescope_assignment = self.get_gradescope_assignment_by_name(assignments, self.name)
-
-        # Save the df to data/
-        # grade_df = self.course.gradescope.get_assignment_grades(gradescope_assignment)
-        response = self.course.gradescope.session.get(gradescope_assignment.get_grades_url())
-        self.course.gradescope._response_check(response)
-        grade_df = pd.read_csv(io.StringIO(response.content.decode('utf-8')))
-        grade_df = grade_df[grade_df["First Name"] != "unidentified"].reset_index(drop=True)
-        grade_df["SID"] = grade_df["SID"].astype("Int64")
-        save_csv(csv_file_name, grade_df)
+        save_csv(csv_file_name, download_grades_df(self.course, self.name))
 
     def get_csv_file_name(self) -> Any:
         #! Create assignments JSON if does not exist already.
@@ -300,12 +288,8 @@ class LoadFromCSVAssignment(Assignment):
                 user_resp = input("Download CSV from Gradescope? y/n :")
                 if "y" in user_resp.lower():
                     assert(self.update_from_gradescope)
-                    # Make the name that would be on gradescope
-                    assignment_name = copy.deepcopy(self.name)
-                    if "Test" in assignment_name:
-                        assignment_name = assignment_name[:assignment_name.index("Question") - 1]
-                    assignment_name = assignment_name.replace(" ", "_")
-                    csv_file_path = str(self.assignment_data_path / f"{assignment_name}_scores.csv")
+                    file_stem = gradescope_title(self.name).replace(" ", "_")
+                    csv_file_path = str(self.assignment_data_path / f"{file_stem}_scores.csv")
                 else:
                     potential_csv_file_name = input(f"Enter a CSV file name, or type press and put the file in {self.assignment_data_path}. Enter when done: ")
                     #? Using my own deduction from the code
@@ -324,14 +308,6 @@ class LoadFromCSVAssignment(Assignment):
         return csv_file_path
 
 
-    def get_gradescope_assignment_by_name(self, assignments, assignment_name):
-        if "Test" in assignment_name:
-            # If we're doing Test X Question Y
-            assignment_name = assignment_name[:assignment_name.index("Question")-1]
-        for assignment in assignments:
-            if assignment_name in assignment.title:
-                return assignment
-        raise ValueError(f"Could not find assignment name:  {assignment_name}")
     ###! End of Jamil Shenanigans
 
     @property
@@ -749,12 +725,17 @@ def make_assignment_from_name(assignment_name, assignment_id, course) -> Assignm
     possible_classes = ["ExamQuestion", "MultiScoreMultiOutcomeAssignment", "SingleScoreSingleOutcomeAssignment", "MultiMasteryExamQuestion"]
     if not os.path.exists(assignment_dir / "assignment.json"):
         os.makedirs(assignment_dir, exist_ok=True)
-        assignment_cls_input = input(f"{assignment_name} Assignment class : SS, EQ or {possible_classes}: ")
-        if assignment_cls_input == "SS":
-            assignment_cls_input = "SingleScoreSingleOutcomeAssignment" #shorthand
-        if assignment_cls_input == "EQ":
-            assignment_cls_input = "ExamQuestion" #shorthand
-        assert assignment_cls_input in possible_classes
+        if "Lab" in assignment_name or "Homework" in assignment_name:
+            assignment_cls_input = "MultiScoreMultiOutcomeAssignment"
+        elif "Test" in assignment_name:
+            assignment_cls_input = "MultiMasteryExamQuestion"
+        else:
+            assignment_cls_input = input(f"{assignment_name} Assignment class : SS, EQ or {possible_classes}: ")
+            if assignment_cls_input == "SS":
+                assignment_cls_input = "SingleScoreSingleOutcomeAssignment" #shorthand
+            if assignment_cls_input == "EQ":
+                assignment_cls_input = "ExamQuestion" #shorthand
+            assert assignment_cls_input in possible_classes
         data_dict = {"assignment_cls": assignment_cls_input}
         with open(assignment_dir / "assignment.json", 'w') as fp:
             json.dump(data_dict, fp)
