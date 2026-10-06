@@ -5,3 +5,6 @@ Lab 4
 Homework 1
 Homework 2
 Homework 3
+Test 1 Question 1
+Test 1 Question 2
+Test 1 Question 3
