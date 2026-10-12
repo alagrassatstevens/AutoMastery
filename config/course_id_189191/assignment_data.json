@@ -6,6 +6,7 @@
     "708202": "Tutorial 4: More Functions and Slicing",
     "706694": "Participation Goals Survey",
     "709710": "Human Computer Interaction (Optional AI Survey) For HW3",
+    "710290": "Syllabus quiz (grades, late policy)",
     "697855": "Homework 1: Choose Your Own Adventure (Design)",
     "705163": "Homework 2: Testing",
     "707886": "Homework 3: Programming",
@@ -31,10 +32,14 @@
     "709325": "Week 6 Day 1 Pre-class prep",
     "709537": "Week 6 Day 2 Pre-class prep",
     "709538": "Week 6 Day 3 Pre-class prep ",
+    "710211": "Week 7 Day 1 Pre-class prep ",
+    "710300": "Week 7 Day 2 Pre-class prep",
+    "710301": "Week 7 Day 3 Pre-class prep",
     "699240": "Lab 1: Problem decomposition",
     "699576": "Lab 2: Testing",
     "706968": "Lab 3: Programming",
     "707889": "Lab 4: Stack traces",
     "708980": "Lab 5: Tracing recursion",
+    "710029": "Lab 6: Writing recursive functions",
     "699259": "Reference for all course learning outcomes. "
 }
