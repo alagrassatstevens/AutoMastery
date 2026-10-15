@@ -37,9 +37,28 @@
     ],
     "53550": [
         {
+            "assignment_id": 707886,
+            "criterion_id": "1791986947227",
+            "assignment_name": "Homework 3: Programming"
+        },
+        {
             "assignment_id": 707889,
             "criterion_id": "1790378589402",
             "assignment_name": "Lab 4: Stack traces"
+        }
+    ],
+    "53551": [
+        {
+            "assignment_id": 708980,
+            "criterion_id": "1791654396154",
+            "assignment_name": "Lab 5: Tracing recursion"
+        }
+    ],
+    "53552": [
+        {
+            "assignment_id": 710029,
+            "criterion_id": "1791654446315",
+            "assignment_name": "Lab 6: Writing recursive functions"
         }
     ]
 }

@@ -1,0 +1,45 @@
+{
+    "53547": [
+        {
+            "assignment_id": 697855,
+            "criterion_id": "1787889971422",
+            "assignment_name": "Homework 1: Choose Your Own Adventure (Design)"
+        },
+        {
+            "assignment_id": 699240,
+            "criterion_id": "1787853452927",
+            "assignment_name": "Lab 1: Problem decomposition"
+        }
+    ],
+    "53548": [
+        {
+            "assignment_id": 705163,
+            "criterion_id": "1788727613909",
+            "assignment_name": "Homework 2: Testing"
+        },
+        {
+            "assignment_id": 699576,
+            "criterion_id": "1787890351687",
+            "assignment_name": "Lab 2: Testing"
+        }
+    ],
+    "53549": [
+        {
+            "assignment_id": 707886,
+            "criterion_id": "1790378100030",
+            "assignment_name": "Homework 3: Programming"
+        },
+        {
+            "assignment_id": 706968,
+            "criterion_id": "1789596031842",
+            "assignment_name": "Lab 3: Programming"
+        }
+    ],
+    "53550": [
+        {
+            "assignment_id": 707889,
+            "criterion_id": "1790378589402",
+            "assignment_name": "Lab 4: Stack traces"
+        }
+    ]
+}
