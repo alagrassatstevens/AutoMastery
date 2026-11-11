@@ -545,7 +545,7 @@ class MultiMasteryExamQuestion(ExamQuestion):
         """
         super().__init__(name, assignment_id, course, update_from_gradescope)
         self.rubric_id_to_qkeys_by_mastery_level = {}
-        self.course_outcome_alignment  = self.course.load_outcome_alignment()
+        self.course_outcome_alignment  = self.course.load_outcome_alignment(overwrite=True)
         # Assuming Mastery and Exceeds Mastery are the things
         for rubric_id in self.rubric_id_to_qkeys:
             qkeys_by_mastery_level = {"Exceeds Mastery": [], "Mastery": []}
@@ -571,8 +571,8 @@ class MultiMasteryExamQuestion(ExamQuestion):
         unmet_assessments = []
         canvas_user_id = submission_url.split("/")[-1]
         aligned_assessments = self.course_outcome_alignment[str(outcome_id)]
-        if len(aligned_assessments) == 1:
-            raise RuntimeError("Didn't see any other aligned assessments. Is this test only?")
+        if not len(aligned_assessments):
+            raise RuntimeError("Didn't see any aligned assessments. Is this test only?")
         for assessment in aligned_assessments:
             if assessment["assignment_id"] == self.assignment_id:
                 continue

@@ -47,6 +47,30 @@
             "assignment_name": "Lab 4: Stack traces"
         }
     ],
+    "53552": [
+        {
+            "assignment_id": 709382,
+            "criterion_id": "1792693603376",
+            "assignment_name": "Homework 4: Recursion"
+        },
+        {
+            "assignment_id": 710029,
+            "criterion_id": "1791654446315",
+            "assignment_name": "Lab 6: Writing recursive functions"
+        }
+    ],
+    "53553": [
+        {
+            "assignment_id": 710938,
+            "criterion_id": "1792381291610",
+            "assignment_name": "Homework 5: Image compression"
+        },
+        {
+            "assignment_id": 710564,
+            "criterion_id": "1792446398295",
+            "assignment_name": "Lab 7: Data representations"
+        }
+    ],
     "53551": [
         {
             "assignment_id": 708980,
@@ -54,11 +78,18 @@
             "assignment_name": "Lab 5: Tracing recursion"
         }
     ],
-    "53552": [
+    "53554": [
         {
-            "assignment_id": 710029,
-            "criterion_id": "1791654446315",
-            "assignment_name": "Lab 6: Writing recursive functions"
+            "assignment_id": 711248,
+            "criterion_id": "1792593703434",
+            "assignment_name": "Lab 8: Memory models"
+        }
+    ],
+    "53555": [
+        {
+            "assignment_id": 712653,
+            "criterion_id": "1793812902726",
+            "assignment_name": "Lab 10: Loops"
         }
     ]
 }

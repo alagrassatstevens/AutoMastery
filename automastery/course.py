@@ -170,7 +170,7 @@ class Course():
         alignments = {}
         for assignment_id, name in self.assignment_id_to_name.items():
             if "Lab" not in name and "Homework" not in name:
-                continue # Can't be relevant
+                continue # Not relevant, or is a test question
             url = f"{self.PAGE_URL}/courses/{self.COURSE_ID}/assignments/{assignment_id}?include[]=rubric"
             response = requests.get(url, headers=self.headers)
             response.raise_for_status()

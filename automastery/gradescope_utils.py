@@ -14,23 +14,15 @@ def gradescope_title(assignment_name):
     return assignment_name
 
 
-def find_assignment_by_name(assignments, assignment_name):
+def find_assignment_attempts(assignments, assignment_name):
+    """Top-level assignments whose title matches the Canvas title. One is the normal case;
+    more than one (e.g. initial and retake) triggers the per-subquestion max."""
     title = gradescope_title(assignment_name)
-    for assignment in assignments:
-        if title in assignment.title:
-            return assignment
-    raise ValueError(f"Could not find assignment name: {assignment_name}")
-
-
-def find_version_assignments(assignments, assignment_name):
-    title = gradescope_title(assignment_name)
-    container = next((a for a in assignments if a.title == title), None)
-    if container is None:
-        return None
-    versions = [a for a in assignments if a.container_id == container.assignment_id]
-    if not versions:
-        return None
-    return sorted(versions, key=lambda a: a.version_index)
+    attempts = [a for a in assignments if not a.container_id and a.title.startswith(title)
+                and not a.title[len(title):len(title) + 1].isalnum()]
+    if not attempts:
+        raise ValueError(f"Could not find assignment name: {assignment_name}")
+    return attempts
 
 
 def download_grades(course, assignment):
@@ -89,36 +81,25 @@ def download_and_combine_versions(course, versions):
 
 
 def question_key(col):
-    """Key that identifies a subquestion across sittings even if the header text differs."""
+    """Key that identifies a subquestion across attempts even if the header text differs."""
     m = re.match(r"\s*(\d+(?:\.\d+)?)\s*:\s*([a-zA-Z]+)?", col)
     if m:
         return f"{m.group(1)}:{(m.group(2) or '').lower()}"
     return re.sub(r"\s*\(\d+(?:\.\d+)?\s*pts\)\s*$", "", col).strip()
 
 
-def find_max_sittings(assignments, assignment_name):
-    """Top-level assignments whose title matches the Canvas title (e.g. initial and retake),
-    ordered with the non-retake base first. None means a single sitting: use the version path."""
-    title = gradescope_title(assignment_name)
-    sittings = [a for a in assignments if not a.container_id and (
-        a.title == title or
-        (a.title.startswith(title) and not a.title[len(title):len(title) + 1].isalnum()))]
-    if len(sittings) <= 1:
-        return None
-    base = [s for s in sittings if "retake" not in s.title.lower()]
-    if len(base) != 1:
-        raise AmbiguousReferenceSittingError([s.title for s in sittings])
-    return base + [s for s in sittings if s not in base]
-
-
-def download_sitting(course, assignments, sitting):
-    versions = find_version_assignments(assignments, sitting.title)
+def download_attempt(course, assignments, attempt):
+    """Download attempt directly combines versions for scores
+    due to a change where Gradescope only seems to contain container's scores.csv
+    but not each versions """
+    versions = sorted((a for a in assignments if a.container_id == attempt.assignment_id),
+                      key=lambda a: a.version_index)
     if versions:
-        return download_and_combine_versions(course, versions)
-    return clean_grades(download_grades(course, sitting))
+        return clean_grades(download_and_combine_versions(course, versions))
+    return clean_grades(download_grades(course, attempt))
 
 
-def max_across_sittings(dfs):
+def max_across_attempts(dfs):
     """Per-subquestion max across sittings; dfs[0] is the base and supplies the output headers.
     A student missing from a sitting scores 0 there; missing from all stays Missing."""
     maps = [{question_key(c): c for c in question_columns(df)} for df in dfs]
@@ -144,17 +125,18 @@ def max_across_sittings(dfs):
 
 def download_grades_df(course, assignment_name):
     """Grades for an assignment, merging every version, and taking the per-subquestion max
-    across multiple sittings (e.g. initial and retake) when more than one exists."""
+    across multiple attempts (e.g. initial and retake) when more than one exists."""
     assignments = course.gradescope.get_assignments(course.gs_course)
-    sittings = find_max_sittings(assignments, assignment_name)
-    if sittings:
-        logger.info("Taking the per-subquestion max across sittings for %s: %s",
-                    assignment_name, [s.title for s in sittings])
-        return max_across_sittings([download_sitting(course, assignments, s) for s in sittings])
-    versions = find_version_assignments(assignments, assignment_name)
-    if versions:
-        return download_and_combine_versions(course, versions)
-    return clean_grades(download_grades(course, find_assignment_by_name(assignments, assignment_name)))
+    attempts = find_assignment_attempts(assignments, assignment_name)
+    if len(attempts) == 1:
+        return download_attempt(course, assignments, attempts[0])
+    base = [s for s in attempts if "retake" not in s.title.lower()]
+    if len(base) != 1:
+        raise AmbiguousReferenceSittingError([s.title for s in attempts])
+    ordered = base + [s for s in attempts if s not in base]
+    logger.info("Taking the per-subquestion max across attempts for %s: %s",
+                assignment_name, [s.title for s in ordered])
+    return max_across_attempts([download_attempt(course, assignments, s) for s in ordered])
 
 
 class VersionKeyMismatchError(RuntimeError):
@@ -172,9 +154,9 @@ class VersionKeyMismatchError(RuntimeError):
 class AmbiguousReferenceSittingError(RuntimeError):
     def __init__(self, titles):
         super().__init__(
-            "Expected exactly one non-retake sitting to anchor the column headers, but matched "
+            "Expected exactly one non-retake attempt to anchor the column headers, but matched "
             f"these top-level assignments: {titles}. "
-            "Rename on Gradescope so only the base sitting lacks 'retake'.")
+            "Rename on Gradescope so only the base attempt lacks 'retake'.")
 
 
 class DuplicateSubmissionError(RuntimeError):
